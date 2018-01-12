@@ -1,0 +1,5 @@
+<**/src/**>: include
+
+true: package(graphics)
+true: thread,debug
+true: bin_annot

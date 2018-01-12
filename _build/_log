@@ -1,0 +1,13 @@
+### Starting build.
+# Target: src/raytracer.ml.depends, tags: { bin_annot, debug, extension:ml, file:src/raytracer.ml, include, ocaml, ocamldep, package(graphics), quiet, thread, traverse }
+ocamlfind ocamldep -package graphics -modules src/raytracer.ml > src/raytracer.ml.depends
+# Target: src/raytracer.cmo, tags: { bin_annot, byte, compile, debug, extension:cmo, extension:ml, file:src/raytracer.cmo, file:src/raytracer.ml, implem, include, ocaml, package(graphics), quiet, thread, traverse }
+ocamlfind ocamlc -c -g -bin-annot -thread -package graphics -I src -o src/raytracer.cmo src/raytracer.ml
++ ocamlfind ocamlc -c -g -bin-annot -thread -package graphics -I src -o src/raytracer.cmo src/raytracer.ml
+File "src/raytracer.ml", line 230, characters 32-398:
+Warning 8: this pattern-matching is not exhaustive.
+Here is an example of a value that is not matched:
+[]
+# Target: src/raytracer.byte, tags: { bin_annot, byte, debug, dont_link_with, extension:byte, file:src/raytracer.byte, include, link, ocaml, package(graphics), program, quiet, thread, traverse }
+ocamlfind ocamlc -linkpkg -g -thread -package graphics src/raytracer.cmo -o src/raytracer.byte
+# Compilation successful.

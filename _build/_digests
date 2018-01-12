@@ -1,0 +1,4 @@
+"Rule: ocaml: cmo* -> byte (%=src/raytracer )": "cJ{\131\175k\148\199Z dTJ\134o\249"
+"Rule: ocaml: ml -> cmo & cmi (%=src/raytracer )": "\004\182\219D\193f \007O\144\169\230(\211\232\015"
+"Resource: /home/kamirus/Desktop/RayTracer/src/raytracer.ml": "\\\005\t\018\188\"Yb\212GaM\227\132Vy"
+"Rule: ocaml dependencies ml (%=src/raytracer )": "7\020\186o\237\241\204\138\202\030\195\027\177\235\227E"
