@@ -1,17 +1,21 @@
-(* ........... *)
+(* ..RayTracer.. *)
 
-(* TO DO
-    dodać płaszczyznę i jej intersecta -> NIE DZIAŁA :(
-    zmieniać kąt patrzenia
-    wczytywanie i zapisywanie do pliku!!
-    ściagnąć cośtam
-
-*)
 (*
 #load "graphics.cma";;
 ocamlc graphics.cma foo.ml
 ocamlopt graphics.cmxa foo.ml
  *)
+
+(*
+TO DO:
+-> camera, focal
+-> obracanie obrazu
+-> poprawic rozdzielczosc (nie z lewego rogu piksela :P)
+-> poprawic to cos z wektorem normalnym plaszczyzny
+-> jak to zrobic, zeby dzialalo szybciej????
+-> wczytywanie i zapisywanie sceny (przeinstalowac system przy okazji xd)
+*)
+
 (* _____________________________________________________________________________ *)
 
 
@@ -70,21 +74,11 @@ sig
   val this : L.t
 end
 
-(* _____________________________________________________________________________ *)
-
-
-let make_obj_instance (type a) (module Obj : OBJECT with type config = a) (obj_c) =
-    (module struct
-        module O = Obj
-        let this = O.create obj_c
-end : ObjectInstance)
-
-
-let make_light_instance (type a) (module Light : LIGHT with type config = a) (light_c) =
-  (module struct
-    module L = Light
-    let this = L.create light_c
-  end : LightInstance)
+module type RAYTRACE =
+sig
+    type t
+    val ray_trace : t -> int -> int -> point
+end
 
 (* _____________________________________________________________________________ *)
 
@@ -109,6 +103,8 @@ module V = struct
                                 let z' = if z > 255 then 255 else z in
                             (x',y',z')
 
+  let distance (x1, y1, z1) (x2, y2, z2) = sqrt((x1 -. x2)*.(x1 -. x2) +. (y1 -. y2)*.(y1 -. y2) +. (z1 -.z2)*.(z1 -.z2))
+
   let print_vec (x,y,z) = print_char '(';
                           print_float(x); print_char ',';
                           print_float(y); print_char ',';
@@ -118,6 +114,8 @@ end
 (* _____________________________________________________________________________ *)
 
 module M = struct
+
+    let abs x = if x < 0. then x*.(-1.) else x
 
     let delta_t a b c = b*.b -. 4.*.a*.c
 
@@ -139,6 +137,11 @@ end
 
 (* _____________________________________________________________________________ *)
 
+let max_dist = 1000000.
+let shadow_colorf = (0.02,0.02,0.02)
+let light_intensity = 300.
+
+(* _____________________________________________________________________________ *)
 
 type sphere_t = {position : point; r : float; color : colorf; diffusion : float}
 
@@ -184,21 +187,17 @@ module Plane : OBJECT with type config = plane_t =
         type t = plane_t
 
 
-        let create t = t
+        let create {a; b; c; d; color; diffusion} =
+        	let l = V.length (a,b,c) in
+        	{a = a/.l; b = b/.l
+        	; c = c/.l; d = d/.l
+        	; color; diffusion}
 
         let get_color {color} = color
         let get_diffusion {diffusion} = diffusion
 
-        let normal_vec {a; b; c} _ = V.normalize (a,b,c)
+        let normal_vec {a; b; c} _ = (a,b,c)
 
-        let get_normalized_abcd {a;b;c;d} = let l = V.length (a,b,c) in (a/.l, b/.l, c/.l, d/.l)
-        (* let intersect ray {a;b;c;d} =
-            let ((p1, p2, p3), (v1, v2, v3)) = ray in
-            let divider = a*.v1 +. b*.v2 +. c*.v3 in
-            if divider <> 0.
-                then let t = -1.*.(a*.p1 +. b*.p2 +. c*.p3 +. d)/.divider in
-                Some(t, M.intersection_point ray t)
-            else None *)
 
         let reflection_ray t p v =
             let (n1,n2,n3) = normal_vec t p
@@ -208,15 +207,16 @@ module Plane : OBJECT with type config = plane_t =
                 -.(a2*.n3*.n3 -. 2.*.a3*.n2*.n3 -. a2*.n2*.n2 -. 2.*.a1*.n1*.n2 +. a2*.n1*.n1),
                 (a3*.n3*.n3 +. (2.*.a2*.n2 +. 2.*.a1*.n1)*.n3 -. a3*.n2*.n2 -. a3*.n1*.n1))
 
-        let intersect (x0, v) plane =
-            let (a',b',c',d') = get_normalized_abcd plane in
-            let abc = (a',b',c') and
-            v' = V.normalize v in
+
+        let intersect (p, v) {a;b;c;d} =
+            let abc = (a,b,c)
+            and v' = V.normalize v in
             let num = V.dot v' abc in
                 if num = 0. then None
                 else
-                    let t = (-.(d' +. V.dot abc x0) /. num) in
-                    Some (t, M.intersection_point (x0,v') t)
+                    let t = (-.(d +. V.dot abc p) /. num) in
+                    if t < 0. then None
+                    else Some (t, M.intersection_point (p,v') t)
 end
 
 (* _______________________________________________________________________________*)
@@ -245,94 +245,177 @@ struct
 
     let create t = t
     let exposure {position; color} p c normal_v =
-        let dist = (V.length @@ V.sub position p)/.300. in
+        let dist = (V.length @@ V.sub position p)/.light_intensity in
         let exp_v = V.normalize @@ V.sub position p in
-        let new_c = V. mult2 (V.mult2 (V.mult c (V.dot exp_v normal_v)) (V.mult c (1./.dist/.dist))) color in
+        let new_c = V. mult2 (V.mult2 (V.mult c (M.abs (V.dot exp_v normal_v))) (V.mult c (1./.dist/.dist))) color in
         (p, exp_v, new_c)
+
+end
+
+(* _____________________________________________________________________________ *)
+
+type scene_config = {list_of_obj : (module ObjectInstance) list
+              ; list_of_lights : (module LightInstance) list}
+
+module MakeScene =
+struct
+
+    type t = scene_config
+
+
+    let empty () = {list_of_obj = []; list_of_lights = []}
+
+    let make_obj_instance (type a) (module Obj : OBJECT with type config = a) (obj_c) =
+        (module struct
+            module O = Obj
+            let this = O.create obj_c
+        end : ObjectInstance)
+
+    let make_light_instance (type a) (module Light : LIGHT with type config = a) (light_c) =
+      (module struct
+        module L = Light
+        let this = L.create light_c
+      end : LightInstance)
+
+
+    let add_obj {list_of_obj; list_of_lights} (type a) (module Obj : OBJECT with type config = a) (obj_c) =
+        {list_of_obj = (make_obj_instance (module Obj) obj_c)::list_of_obj; list_of_lights}
+
+    let add_light {list_of_lights; list_of_obj} (type a) (module Light : LIGHT with type config = a) (light_c) =
+        {list_of_lights = (make_light_instance (module Light) light_c)::list_of_lights; list_of_obj}
+
 
 end
 
 (* _______________________________________________________________________________ *)
 
-let ray1 = ((0.,0.,0.),(0.,1.,0.))
+module RayTrace : RAYTRACE with type t = scene_config =
+struct
 
-let l =
-      let s = make_obj_instance (module Sphere) {position = (600.,300.,0.); r = 150.; color = V.to_colorf (200, 0, 200); diffusion = 1.}
-      and s2 = make_obj_instance (module Sphere) {position = (50.,100.,0.); r = 20.; color = V.to_colorf (255, 0, 0); diffusion = 1.}
-      and s3 = make_obj_instance (module Sphere) {position = (150.,400.,200.); r = 50.; color = V.to_colorf (255, 200, 0); diffusion = 1.}
-      and s4 = make_obj_instance (module Sphere) {position = (350.,250.,50.); r = 80.; color = V.to_colorf (150, 150, 150); diffusion = 0.}
-      and s5 = make_obj_instance (module Sphere) {position = (400.,500.,600.); r = 300.; color = V.to_colorf (50, 50, 200); diffusion = 0.} in
-      (* and s5 = make_obj_instance (module Plane) {a = 0.; b = -1.; c = 0.; d = -10.; color = V.to_colorf (0, 55, 100); diffusion = 1.} in *)
-      [s;s2;s3;s4;s5]
 
-let tescik = match l with
-                    (module OInstance)::t -> OInstance.O.intersect ray1 OInstance.this
-                    | _ -> failwith ""
+    type t = scene_config
 
-let lights =
-    let l1 = make_light_instance (module Sun) {vec = (0.,-1.,0.)}
-    (* and l2 = make_light_instance (module Lamp) {position = (100., 700., 0.); color = V.to_colorf (0, 200, 255)} *)
-    and l3 = make_light_instance (module Lamp) {position = (500., -100., 400.); color = V.to_colorf (200, 200, 255)}
-    and l4 = make_light_instance (module Lamp) {position = (700., -50., -400.); color = V.to_colorf (255, 255, 255)} in
-    [l1;l3;l4]
 
-let max_dist = 1000000.;;
+    let create t = t
+
+    let pixel i j = ((float i), (float j), 0.) (* potem srodek pixela bedziemy brac, a nie jego dolny lewy rog *)
+
+    let sight_ray point = (point, (0.,0.,1.)) (* bo na razie patrzymy po prostu wzdluz z-towej wspolrzednej *)
+
+    let closest_intersection ray list_of_obj =
+            let rec aux res_pair dist = function
+                    [] -> res_pair
+                    |(module OInstance : ObjectInstance) as new_obj::t ->
+                        let intersect_pair = OInstance.O.intersect ray OInstance.this in
+                        match intersect_pair with
+                            | Some (new_dist, p') ->
+                                if new_dist < dist && new_dist > 0. then aux (Some (new_obj, p')) new_dist t
+                                else aux res_pair dist t
+                            | _ ->  aux res_pair dist t
+                    in aux None max_dist list_of_obj
+
+
+    let compute_color ((module OInstance : ObjectInstance), point) list_of_obj list_of_lights =
+                let rec aux cur_c = function
+                        [] -> cur_c
+                        | (module LInstance : LightInstance)::t ->
+                                    let norm_v = OInstance.O.normal_vec OInstance.this point in
+                                    let obj_col = OInstance.O.get_color OInstance.this in
+                                    let (p,v,c) =
+                                        LInstance.L.exposure LInstance.this point obj_col norm_v in
+                                        match closest_intersection (V.add p (V.mult v 0.001),v) list_of_obj with
+                                            |None -> let new_c = V.add cur_c c in aux new_c t
+                                            |Some(_,_) -> aux cur_c t
+                 in aux shadow_colorf list_of_lights
+
+
+    let rec compute_ray ray list_of_obj list_of_lights depth =
+            match closest_intersection ray list_of_obj with
+                None -> (0.,0.,0.)
+                | Some op_pair ->
+                        let ((module OInstance : ObjectInstance), point) = op_pair in
+                        if OInstance.O.get_diffusion OInstance.this < 1. && depth > 0
+                            then let (_, ray_vec) = ray in
+                                let reflected_ray = (point, OInstance.O.reflection_ray OInstance.this point ray_vec) in
+                                V.mult2 (OInstance.O.get_color OInstance.this) (compute_ray reflected_ray list_of_obj list_of_lights (depth - 1))
+                        else compute_color op_pair list_of_obj list_of_lights
+
+
+    let ray_trace {list_of_obj; list_of_lights} =
+        fun x y -> compute_ray (sight_ray @@ pixel x y) list_of_obj list_of_lights 4
+end
+(* _____________________________________________________________________________ *)
+
+let sphere_configs =
+      [((module Sphere : OBJECT with type config = sphere_t), {position = (600.,300.,150.); r = 150.; color = V.to_colorf (200, 0, 200); diffusion = 1.});
+      ((module Sphere), {position = (50.,100.,0.); r = 20.; color = V.to_colorf (255, 0, 0); diffusion = 1.});
+      ((module Sphere), {position = (150.,400.,200.); r = 50.; color = V.to_colorf (255, 200, 0); diffusion = 1.});
+      ((module Sphere), {position = (350.,250.,50.); r = 80.; color = V.to_colorf (150, 150, 150); diffusion = 0.});
+      ((module Sphere), {position = (400.,500.,600.); r = 300.; color = V.to_colorf (50, 50, 200); diffusion = 1.})]
+
+let plane_configs =
+      [((module Plane : OBJECT with type config = plane_t), {a = 0.; b = 0.5; c = -0.2; d = 10.; color = V.to_colorf (20, 50, 50); diffusion = 1.});]
+
+(*
+let plane_configs =
+      [((module Plane : OBJECT with type config = plane_t), {a = 0.; b = 0.5; c = -0.2; d = 10.; color = V.to_colorf (20, 50, 50); diffusion = 1.});
+      ((module Plane : OBJECT with type config = plane_t), {a = -1.; b = 0.3; c = -0.5; d = 800.; color = V.to_colorf (50, 0, 30); diffusion = 1.})]
+*)
+
+let sun_configs =[((module Sun : LIGHT with type config = sun_config), {vec = (0.1,-1.,0.1)})]
+let lamp_configs = [((module Lamp : LIGHT with type config = lamp_config), {position = (100., 700., 0.); color = V.to_colorf (0, 200, 255)});
+                    ((module Lamp), {position = (500., -100., 400.); color = V.to_colorf (200, 20, 255)});
+                    ((module Lamp), {position = (700., -50., -400.); color = V.to_colorf (0, 255, 0)})]
+
+
+let myObjects = List.fold_right (fun (x,y) scene -> MakeScene.add_obj scene x y)
+                        plane_configs
+                        (List.fold_right (fun (x,y) scene -> MakeScene.add_obj scene x y) sphere_configs (MakeScene.empty ()))
+
+let myScene = List.fold_right (fun (x,y) scene -> MakeScene.add_light scene x y) lamp_configs
+                        (List.fold_right (fun (x,y) scene -> MakeScene.add_light scene x y) sun_configs myObjects)
 
 (* _____________________________________________________________________________ *)
 
-
-let distance (x1, y1, z1) (x2, y2, z2) = Pervasives.sqrt((x1 -. x2)*.(x1 -. x2) +. (y1 -. y2)*.(y1 -. y2) +. (z1 -.z2)*.(z1 -.z2))
-
-let pixel i j = ((float i), (float j), 0.) (* potem srodek pixela bedziemy brac, a nie jego dolny lewy rog *)
-
-let sight_ray point = (point, (0.,0.,1.)) (* bo na razie patrzymy po prostu wzdluz z-towej wspolrzednej *)
-
-
-let closest_intersection ray list_of_obj =
-        let rec aux res_pair dist = function
-                [] -> res_pair
-                |(module OInstance : ObjectInstance) as new_obj::t ->
-                    let intersect_pair = OInstance.O.intersect ray OInstance.this in
-                    match intersect_pair with
-                        | Some (new_dist, p') ->
-                            if new_dist < dist then aux (Some (new_obj, p')) new_dist t
-                            else aux res_pair dist t
-                        | _ ->  aux res_pair dist t
-                in aux None max_dist list_of_obj
+(*
+type camera_t = {a : point; b : point; c : point
+                ; focal : point
+                ; img_width : int; img_height : int
+                ; w : float; h : float
+                ; pix_w : float; pix_h : float}
 
 
-(* let tescik2 = closest_intersection ray1 l *)
-(* let exposure_ray point (module LInstance : LightInstance) = (point, LInstance.L.exposure LInstance.this point) *)
+module type CAMERA =
+sig
+    type config
+    type t
+
+    val create : config -> t
+
+end
 
 
-let compute_color ((module OInstance : ObjectInstance), point) list_of_obj list_of_lights =
-            let rec aux cur_c = function
-                    [] -> cur_c
-                    | (module LInstance : LightInstance)::t ->
-                                let norm_v = OInstance.O.normal_vec OInstance.this point in
-                                let obj_col = OInstance.O.get_color OInstance.this in
-                                let (p,v,c) as exp_result =
-                                    LInstance.L.exposure LInstance.this point obj_col norm_v in
-                                    match closest_intersection (p,v) list_of_obj with
-                                        |None -> let new_c = V.add cur_c c in aux new_c t
-                                        |Some(_,_) -> aux cur_c t
-                                    in aux (0.01,0.01,0.01) list_of_lights
+module Camera : CAMERA with type config = camera_t =
+struct
 
+    type config = camera_t
+    type t = camera_t
 
-let rec compute_ray ray list_of_obj list_of_lights depth =
-        match closest_intersection ray list_of_obj with
-            None -> (0.,0.,0.)
-            | Some op_pair ->
-                    let ((module OInstance : ObjectInstance), point) = op_pair in
-                    if OInstance.O.get_diffusion OInstance.this < 1. && depth > 0
-                        then let (_, ray_vec) = ray in
-                            let reflected_ray = (point, OInstance.O.reflection_ray OInstance.this point ray_vec) in
-                            V.mult2 (OInstance.O.get_color OInstance.this) (compute_ray reflected_ray list_of_obj list_of_lights (depth - 1))
-                    else compute_color op_pair list_of_obj list_of_lights
+    let create {a; b; c; focal; img_width; img_height} =
+            let w = V.distance a b
+            and h = V.distance a c in
+            let pix_w = w /. float_of_int img_width
+            and pix_h = h /. float_of_int img_height in
+        {a; b; c; focal; img_width; img_height; w; h; pix_h; pix_w}
 
+    let pixel_coords {a; b; c; w; h} i j = ()
 
+end *)
 
-let ray_trace x y = compute_ray (sight_ray @@ pixel x y) l lights 5
+(* let test1 = myScene
+let test2 = myObjects
+let test3 = RayTrace.ray_trace myScene
+ *)
 
 
 let render () =
@@ -340,9 +423,11 @@ let render () =
     open_graph " 800x600";
     clear_graph ();
     (* auto_synchronize false; *)
-    for x = 0 to 800-1 do
-        for y = 0 to 600-1 do
-            let (r,g,b) = V.in_bouds_255 @@ V.from_colorf @@ ray_trace x y in
+    let img_width = 800
+    and img_height = 600 in
+    for x = 0 to (img_width-1) do
+        for y = 0 to (img_height-1) do
+            let (r,g,b) = V.in_bouds_255 @@ V.from_colorf @@ RayTrace.ray_trace myScene x y in
             set_color @@ rgb r g b;
             plot x y;
         done;
@@ -357,45 +442,23 @@ let render () =
     loop ()
 let () = render ()
 
+
+
 (*
-let input_line_opt ic =
-  try Some (input_line ic)
-  with End_of_file -> None
-
-let read_lines ic =
-  let rec aux acc =
-    match input_line_opt ic with
-    | Some line -> aux (line::acc)
-    | None -> (List.rev acc)
-  in
-  aux []
-
-let lines_of_file filename =
-  let ic = open_in filename in
-  let lines = read_lines ic in
-  close_in ic;
-  List.filter (fun l -> l <> "") (lines)
-
-let read_sphere l = let x::y::z::rad::r::g::b::t = l in
-                    make_obj_instance (module Sphere) {position = (float_of_string x,float_of_string y,float_of_string z); r = float_of_string rad; color = V.to_colorf (int_of_string r, int_of_string g, int_of_string b)}, t
-
-let split_end =
-    let rec aux acc = function
-    | [] -> acc, []
-    | h::t -> if h = "end"
-              then acc, t
-              else aux (h::acc) t
+let objects =
+      let s = make_obj_instance (module Sphere) {position = (600.,300.,150.); r = 150.; color = V.to_colorf (200, 0, 200); diffusion = 1.}
+      and s2 = make_obj_instance (module Sphere) {position = (50.,100.,0.); r = 20.; color = V.to_colorf (255, 0, 0); diffusion = 1.}
+      and s3 = make_obj_instance (module Sphere) {position = (150.,400.,200.); r = 50.; color = V.to_colorf (255, 200, 0); diffusion = 1.}
+      and s4 = make_obj_instance (module Sphere) {position = (350.,250.,50.); r = 80.; color = V.to_colorf (150, 150, 150); diffusion = 0.}
+      and s5 = make_obj_instance (module Sphere) {position = (400.,500.,600.); r = 300.; color = V.to_colorf (50, 50, 200); diffusion = 1.}
+      and s6 = make_obj_instance (module Plane) {a = 0.; b = 0.5; c = -1.; d = 400.; color = V.to_colorf (80, 50, 80); diffusion = 1.} in
+      [s;s2;s3;s4;s5;]
 
 
-let read_objects l =
-    let objects_str, t = split_end l in
-    let lights_str, screen_str = split_end t in
-        let rec aux = function
-        | [] -> ([], [])
-        | "sphere"::t -> let (a,b) = read_sphere t in a :: aux t
-    in let _::t = objects_str in aux t in
-        let rec aux2 = function
-        | [] -> ([], [])
-        | "sun"::t
-
+let lights =
+    let l1 = make_light_instance (module Sun) {vec = (0.,-1.,0.1)}
+    and l2 = make_light_instance (module Lamp) {position = (100., 700., 0.); color = V.to_colorf (0, 200, 255)}
+    and l3 = make_light_instance (module Lamp) {position = (500., -100., 400.); color = V.to_colorf (200, 20, 255)}
+    and l4 = make_light_instance (module Lamp) {position = (700., -50., -400.); color = V.to_colorf (0, 255, 0)} in
+    [l1;l2;l3;l4]
  *)
